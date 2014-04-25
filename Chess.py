@@ -15,8 +15,8 @@ logger.setLevel(logging.WARNING)
 #           Globals             #
 #################################
 
-#INIT_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR'
-INIT_FEN = 'rnbqkbnr/pppppppP/8/8/8/8/PPPPPPP1/RNBQKBNR'
+INIT_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR'
+#INIT_FEN = 'rnbqkbnr/pppppppP/8/8/8/8/PPPPPPP1/RNBQKBNR'
 WHITE = 1
 BLACK = 0
 #define global variables that use square coordinates as names and contain the equivalent long. Also store in a list to iterate over, and also rank and file number associated with each square. Black's back rank is defined to be the 8th ranks, and file a the first file
@@ -760,7 +760,7 @@ def main():
 	evaluator = Evaluation()
 	move_generator = MoveGenerator(pseudoattacks,evaluator)
 	#generate moves
-	nomoves = 1
+	nomoves = 20
 	for i in range(1, nomoves+1):
 		print 'Move: ' + str(i)
 		if tomove == WHITE:
