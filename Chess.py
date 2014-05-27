@@ -3,23 +3,25 @@ from operator import itemgetter
 import random
 import math
 import logging
+import sys
+import pdb
 
 logging.basicConfig()
 logger = logging.getLogger('')
 logger.setLevel(logging.WARNING)
 
 #next steps
-#deal with king in check
+#remove asymmetry wrt to pawns from attacks_from and attacks_to map, but check in getmove for diagonal capturing moves?
 
 #################################
 #           Globals             #
 #################################
 
 INIT_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR'
-#INIT_FEN = 'rnbqkbnr/pppppppP/8/8/8/8/PPPPPPP1/RNBQKBNR'
+#INIT_FEN = '8/7k/8/4p2P/B7/P3K3/P7/8'
 WHITE = 1
 BLACK = 0
-#define global variables that use square coordinates as names and contain the equivalent long. Also store in a list to iterate over, and also rank and file number associated with each square. Black's back rank is defined to be the 8th ranks, and file a the first file
+#define global variables that use square coordinates as names and contain the equivalent long. Also store in a list to iterate over, and also rank and file number associated with each square. Black's back rank is defined to be the 8th rank, and file a the first file
 SQUARES = []
 RANK = {}
 FILE = {}
@@ -32,6 +34,9 @@ for r in range(8,0,-1):
 		RANK[1L << index] = r
 		FILE[1L << index] = 8*r-index
 		index -= 1      
+#define globals which store the diagonals 
+DIAGONALS = {'NE': [[h1],[g1,h2],[f1,g2,h3],[e1,f2,g3,h4],[d1,e2,f3,g4,h5],[c1,d2,e3,f4,g5,h6],[b1,c2,d3,e4,f5,g6,h7],[a1,b2,c3,d4,e5,f6,g7,h8],[a2,b3,c4,d5,e6,f7,g8],[a3,b4,c5,d6,e7,f8],[a4,b5,c6,d7,e8],[a5,b6,c7,d8],[a6,b7,c8],[a7,b8],[a8]], 'NW': [[a1],[b1,a2],[c1,b2,a3],[d1,c2,b3,a4],[e1,d2,c3,b4,a5],[f1,e2,d3,c4,b5,a6],[g1,f2,e3,d4,c5,b6,a7],[h1,g2,f3,e4,d5,c6,b7,a8],[h2,g3,f4,e5,d6,c7,b8],[h3,g4,f5,e6,d7,c8],[h4,g5,f6,e7,d8],[h5,g6,f7,e8],[h6,g7,f8],[h7,g8],[h8]]}
+
 
 #################################
 #        Useful functions       #
@@ -70,6 +75,16 @@ def display_bb(bb):
 		print "\n    +---+---+---+---+---+---+---+---+"
 		print "      a   b   c   d   e   f   g   h  \n"
 		return
+	
+#From a square and a north-east or north-west direction key generate a bitboard consisting of 1's along the chosen diagonal.
+#@memoise
+def sq_to_diagonal_bb(direction,source_sq):
+	diag_bb = 0
+	for diag in DIAGONALS[direction]:
+		if source_sq in diag:
+			for sq in diag:
+				diag_bb |= sq
+			return diag_bb
 		
 #################################
 #          Main Classes         #
@@ -77,6 +92,7 @@ def display_bb(bb):
 
 class Position:
 	def __init__(self,fen):
+		logger.info('Position::__init__ - start')
 		#check format of fen code used to initialise the position
 		Position.check_fen(fen)
 		#array to keep a count of the different type of pieces on the board. This to help speed up the evaluation function
@@ -109,6 +125,8 @@ class Position:
 		for k in 'prnbqk':
 			self.piece_bb['b_pieces'] |= self.piece_bb[k] 
 		self.piece_bb['all_pieces'] = self.piece_bb['w_pieces'] | self.piece_bb['b_pieces']
+		
+		logger.info('Position::__init__ - end')
 		return
 		
 	def update(self,move):
@@ -145,6 +163,8 @@ class Position:
 					self.piece_bb[piece] ^= dest_sq
 				else:
 					self.piece_bb[promotedto] ^= dest_sq
+					self.piece_count[piece] -= 1
+					self.piece_count[promotedto]  += 1
 				break
 		#update general white,black and all piece bitboards
 		self.piece_bb[piece_type] ^= source_sq
@@ -203,13 +223,48 @@ class Position:
 			if file_count != 8:
 				raise Exception('Incorrect number of files in FEN string')
 		return 
-
+		
+	#function to return fen string for position
+	def create_fen(self):
+		board_array = [1 for x in range(0,64)]
+		for piece in 'PRNBQKprnbqk':
+			tmp_bb = deepcopy(self.piece_bb[piece])
+			while(tmp_bb):
+				sq = lsb(tmp_bb)
+				tmp_bb ^= sq
+				file = FILE[sq]
+				rank = RANK[sq]
+				#fen string starts with 8th rank, so need to reflect board 
+				rank = 9 - rank
+				board_array[(rank-1)*8 + (file - 1)] = piece
+		count =  0
+		for index in range(8,64,8):
+			board_array.insert(index+count,'/')
+			count += 1
+		#reduce array by summing up 1's
+		index = 1
+		file = 1
+		while(index < len(board_array)):
+			if board_array[index] in range(1,8-file +  1): 
+				if board_array[index - 1] in range(1,8):
+					board_array[index - 1] = board_array[index] + board_array[index-1]
+					board_array.pop(index)
+				else:
+					index += 1
+			else:
+				index += 1
+			file = file % 8 
+		#construct fen string from board_array
+		fen_str = ''
+		for index in range(0,len(board_array)):
+			fen_str += str(board_array[index])
+		return fen_str
+	
 #Generates and stores bitboards of squares attacked by each piece given an
 #empty board
 class PreProcessedAttacks:
 	def __init__(self):
 		#useful store of diagonals
-		self.diagonals = {'NE': [[h1],[g1,h2],[f1,g2,h3],[e1,f2,g3,h4],[d1,e2,f3,g4,h5],[c1,d2,e3,f4,g5,h6],[b1,c2,d3,e4,f5,g6,h7],[a1,b2,c3,d4,e5,f6,g7,h8],[a2,b3,c4,d5,e6,f7,g8],[a3,b4,c5,d6,e7,f8],[a4,b5,c6,d7,e8],[a5,b6,c7,d8],[a6,b7,c8],[a7,b8],[a8]], 'NW': [[a1],[b1,a2],[c1,b2,a3],[d1,c2,b3,a4],[e1,d2,c3,b4,a5],[f1,e2,d3,c4,b5,a6],[g1,f2,e3,d4,c5,b6,a7],[h1,g2,f3,e4,d5,c6,b7,a8],[h2,g3,f4,e5,d6,c7,b8],[h3,g4,f5,e6,d7,c8],[h4,g5,f6,e7,d8],[h5,g6,f7,e8],[h6,g7,f8],[h7,g8],[h8]]}
 		self.knight = PreProcessedAttacks.preproc_knightattacks()
 		self.king = PreProcessedAttacks.preproc_kingattacks()
 		self.whitepawn = PreProcessedAttacks.preproc_whitepawnattacks()
@@ -344,7 +399,7 @@ class PreProcessedAttacks:
 				diag_attacks['NW'][sq] = {}
 		#loop over diagonals
 		for key in ['NE','NW']:
-			for diag in self.diagonals[key]:
+			for diag in DIAGONALS[key]:
 				#loop over squares along diagonal
 				sq_index = 0
 				for sq in diag:
@@ -401,194 +456,10 @@ class PseudoLegalAttackGenerator:
 	def __init__(self, preprocattacks):
 		#preprocessed moves
 		self._preprocattacks = preprocattacks
-		#generate a map from a square and a north-east or north-west direction key to a bitboard consisting of 1's along the chosen diagonal. Useful when generating diagonal moves for sliding pieces.
-		diags_bb = {'NE': [], 'NW': []}
-		for key in ['NE','NW']:
-			for diag in self._preprocattacks.diagonals[key]:
-				diag_bb = 0
-				for sq in diag:
-					diag_bb |= sq
-				diags_bb[key].append(diag_bb)
-		#map from square to diagonal bb
-		self._mapsqtodiag = {'NE': {}, 'NW': {}}
-		for key in ['NE','NW']:
-			for index in range(0,len(self._preprocattacks.diagonals[key])):
-				for sq in self._preprocattacks.diagonals[key][index]:
-					self._mapsqtodiag[key][sq] = diags_bb[key][index]
 		#attack maps
-		self.attacks_to = {}
-		self.attacks_from = {}
+		self._attacks_to = {}
+		self._attacks_from = {}
 		return
-		
-	def knightattacks(self,pos):
-		logger.info('PseudoLegalAttackGenerator::knightattacks - start')
-		
-		knights = deepcopy(pos.piece_bb['N'] |  pos.piece_bb['n'])
-		while (knights):
-			#find the knight's position
-			source_sq = lsb(knights)
-			#clear source square
-			knights ^= source_sq
-			#find available moves
-			knightattacks = self._preprocattacks.knight[source_sq] 
-			self.attacks_from[source_sq] |= knightattacks			
-			while (knightattacks):
-				dest_sq = lsb(knightattacks)
-				knightattacks ^= dest_sq
-				self.attacks_to[dest_sq] |= source_sq
-				
-		logger.info('PseudoLegalAttackGenerator::knightattacks - end')
-		return 
-		
-	def kingattacks(self,pos): 
-		logger.info('PseudoLegalAttackGenerator::kingattacks - start')
-		
-		kings = deepcopy(pos.piece_bb['K'] |  pos.piece_bb['k'])
-		while (kings):
-			#find the king's position
-			source_sq = lsb(kings)
-			#clear source square
-			kings ^= source_sq
-			#find available moves
-			kingattacks = self._preprocattacks.king[source_sq] 
-			self.attacks_from[source_sq] |= kingattacks			
-			while (kingattacks):
-				dest_sq = lsb(kingattacks)
-				kingattacks ^= dest_sq
-				self.attacks_to[dest_sq] |= source_sq
-				
-		logger.info('PseudoLegalAttackGenerator::kingattacks - end')
-		
-		return 
-		
-	def pawnattacks(self,pos):
-		logger.info('PseudoLegalAttackGenerator::pawnattacks - start')
-		
-		pawns = deepcopy(pos.piece_bb['P'] | pos.piece_bb['p'])
-		while (pawns):
-			#find the pawn's position
-			source_sq = lsb(pawns)
-			#clear source square
-			pawns ^= source_sq
-			#determine pawn colour
-			whitepawn = True 
-			if (source_sq & pos.piece_bb['p']):
-				whitepawn = False
-			#find available non-capturing moves
-			#pawn can't make any non-capturing move if a white or black piece is in its way
-			attacks_nocapture = 0
-			if whitepawn == True:
-				attacks_nocapture =  self._preprocattacks.whitepawn[source_sq] & ~pos.piece_bb['all_pieces']
-			else:
-				attacks_nocapture =  self._preprocattacks.blackpawn[source_sq] & ~pos.piece_bb['all_pieces']
-			pawnattacks = deepcopy(attacks_nocapture)
-			#need to check for case where pawn moves forward two squares but has a blocking piece in front
-			while (attacks_nocapture):
-				dest_sq = lsb(attacks_nocapture)
-				attacks_nocapture ^= dest_sq
-				if abs(RANK[dest_sq]-RANK[source_sq]) ==  2:
-					#determine intervening square
-					inter_sq = 0
-					if whitepawn == True:
-						inter_sq = dest_sq >> 8
-					else:
-						inter_sq = dest_sq << 8
-					if (inter_sq & pos.piece_bb['all_pieces']):
-						#not a valid move
-						pawnattacks ^= dest_sq
-			#next check for capturing moves
-			if whitepawn == True:
-				#diagonal left
-				capture_sq = source_sq << 9
-				#dont include bitshift which cause a wrap around to other side of board
-				#also dont want to capture diagonally left when at a7
-				if capture_sq <= a8 and abs(FILE[capture_sq]-FILE[source_sq]) ==  1:
-					pawnattacks |= capture_sq & pos.piece_bb['all_pieces']
-				#diagonal right
-				capture_sq = source_sq << 7
-				if abs(FILE[capture_sq]-FILE[source_sq]) == 1:
-					pawnattacks |= capture_sq & pos.piece_bb['all_pieces']	
-			else:
-				#diagonal right
-				capture_sq = source_sq >> 9
-				#dont include bitshift which cause a wrap around to other side of board
-				#also dont want to capture diagonally right when at h7
-				if capture_sq >= h1 and abs(FILE[capture_sq]-FILE[source_sq]) ==  1:
-					pawnattacks |= capture_sq & pos.piece_bb['all_pieces']
-				#diagonal left
-				capture_sq = source_sq >> 7
-				if abs(FILE[capture_sq]-FILE[source_sq]) ==  1:
-					pawnattacks |= capture_sq & pos.piece_bb['all_pieces']	
-			#finally check for en-passant moves. This is a pain as need move history!
-			self.attacks_from[source_sq] |= pawnattacks
-			while(pawnattacks):
-				dest_sq = lsb(pawnattacks)
-				pawnattacks ^= dest_sq
-				self.attacks_to[dest_sq] |= source_sq
-				
-		logger.info('PseudoLegalAttackGenerator::pawnattacks - end')
-		
-		return 
-		
-	def rookattacks(self,pos):
-		logger.info('PseudoLegalAttackGenerator::rookattacks - start')
-		
-		rooks = deepcopy(pos.piece_bb['R'] | pos.piece_bb['r'])
-		while (rooks):
-			#find the rooks' position
-			source_sq = lsb(rooks)
-			#clear source square
-			rooks ^= source_sq
-			rookattacks = self.get_rank_attacks(source_sq,pos)
-			rookattacks |= self.get_file_attacks(source_sq,pos)
-			self.attacks_from[source_sq] |= rookattacks
-			while(rookattacks):
-				dest_sq = lsb(rookattacks)
-				rookattacks ^= dest_sq
-				self.attacks_to[dest_sq] |= source_sq
-		
-		logger.info('PseudoLegalAttackGenerator::rookattacks - end')
-		return 
-		
-	def bishopattacks(self,pos):
-		logger.info('PseudoLegalAttackGenerator::bishopattacks - start')
-		
-		bishops = deepcopy(pos.piece_bb['B'] |pos.piece_bb['b'])
-		while (bishops):
-			#find the bishop positions
-			source_sq = lsb(bishops)
-			#clear source square
-			bishops ^= source_sq
-			bishopattacks = self.get_diag_attacks(source_sq,pos)
-			self.attacks_from[source_sq] |= bishopattacks
-			while(bishopattacks):
-				dest_sq = lsb(bishopattacks)
-				bishopattacks ^= dest_sq
-				self.attacks_to[dest_sq] |= source_sq
-				
-		logger.info('PseudoLegalAttackGenerator::bishopattacks - end')
-		return 
-		
-	def queenattacks(self,pos):
-		logger.info('PseudoLegalAttackGenerator::queenattacks - start')
-		
-		queens = deepcopy(pos.piece_bb['Q'] | pos.piece_bb['q'])
-		while(queens):
-			#find the queen positions
-			source_sq = lsb(queens)
-			#clear source square
-			queens ^= source_sq
-			queenattacks = self.get_diag_attacks(source_sq,pos)
-			queenattacks |= self.get_file_attacks(source_sq,pos)
-			queenattacks |= self.get_rank_attacks(source_sq,pos)
-			self.attacks_from[source_sq] |= queenattacks
-			while(queenattacks):
-				dest_sq = lsb(queenattacks)
-				queenattacks ^= dest_sq
-				self.attacks_to[dest_sq] |= source_sq
-		
-		logger.info('PseudoLegalAttackGenerator::queenattacks - end')
-		return 
 		
 	def get_rank_attacks(self,source_sq,pos):
 		#find occupancy value for rank
@@ -609,41 +480,296 @@ class PseudoLegalAttackGenerator:
 		diagonalattacks = 0
 		for key in ['NE','NW']:
 			#find occupancy value for diagonal
-			diag_occ = pos.piece_bb['all_pieces'] & self._mapsqtodiag[key][source_sq]
+			diag_occ = pos.piece_bb['all_pieces'] & sq_to_diagonal_bb(key,source_sq)
 			#find available moves along diagonal
 			diagonalattacks |= self._preprocattacks.diagattacks[key][source_sq][diag_occ] 
 		return diagonalattacks
+	
+	#generate pawns moves that do not involve capturing another piece
+	def get_pawn_noncapture_attacks(self,source_sq,pos):
+		attacks_nocapture = 0
+		if source_sq & (pos.piece_bb['P'] | pos.piece_bb['p']) != 0:
+			whitepawn = True 
+			if (source_sq & pos.piece_bb['p']):
+				whitepawn = False
+			#pawn can't make any non-capturing move if a white or black piece is in its way
+			tmp_attacks_nocapture = 0
+			if whitepawn == True:
+				tmp_attacks_nocapture =  self._preprocattacks.whitepawn[source_sq] & ~pos.piece_bb['all_pieces']
+			else:
+				tmp_attacks_nocapture =  self._preprocattacks.blackpawn[source_sq] & ~pos.piece_bb['all_pieces']
+			attacks_nocapture = deepcopy(tmp_attacks_nocapture)
+			#need to check for case where pawn moves forward two squares but has a blocking piece in front
+			while (tmp_attacks_nocapture):
+				dest_sq = lsb(tmp_attacks_nocapture)
+				tmp_attacks_nocapture ^= dest_sq
+				if abs(RANK[dest_sq]-RANK[source_sq]) ==  2:
+					#determine intervening square
+					inter_sq = 0
+					if whitepawn == True:
+						inter_sq = dest_sq >> 8
+					else:
+						inter_sq = dest_sq << 8
+					if (inter_sq & pos.piece_bb['all_pieces']):
+						#not a valid move
+						attacks_nocapture ^= dest_sq
+		return attacks_nocapture
 		
-	#generate attacks
-	def generateattacks(self,pos):
+	#generate pawns moves that do involve capturing another piece
+	def get_pawn_capture_attacks(self,source_sq,pos):
+		attacks_capture = 0
+		if source_sq & (pos.piece_bb['P'] | pos.piece_bb['p']) != 0:
+			whitepawn = True 
+			if (source_sq & pos.piece_bb['p']):
+				whitepawn = False
+			if whitepawn == True:
+				#diagonal left
+				capture_sq = source_sq << 9
+				#dont include bitshift which cause a wrap around to other side of board
+				#also dont want to capture diagonally left when at a7
+				if capture_sq <= a8 and abs(FILE[capture_sq]-FILE[source_sq]) ==  1:
+					attacks_capture |= capture_sq & pos.piece_bb['all_pieces']
+				#diagonal right
+				capture_sq = source_sq << 7
+				if abs(FILE[capture_sq]-FILE[source_sq]) == 1:
+					attacks_capture |= capture_sq & pos.piece_bb['all_pieces']	
+			else:
+				#diagonal right
+				capture_sq = source_sq >> 9
+				#dont include bitshift which cause a wrap around to other side of board
+				#also dont want to capture diagonally right when at h7
+				if capture_sq >= h1 and abs(FILE[capture_sq]-FILE[source_sq]) ==  1:
+					attacks_capture |= capture_sq & pos.piece_bb['all_pieces']
+				#diagonal left
+				capture_sq = source_sq >> 7
+				if abs(FILE[capture_sq]-FILE[source_sq]) ==  1:
+					attacks_capture |= capture_sq & pos.piece_bb['all_pieces']	
+		return attacks_capture
+			
+	#TODO:pawn en-passant attacks
+	def get_pawn_enpassant_attacks(self,source_sq,pos):
+		attacks_enpassant = 0
+		return attacks_enpassant
+		
+	#generate all attacks
+	#pawns are a little awkward. attacks_from contains all possible pawn moves
+	#whereas attacks_to will only contain diagonal capturing moves. This must be kept in mind during move generation. The alternative is making pawns a special case which will increase the length of a lot of the move generation code and make the code more difficult to read.
+	def get_attacks(self,pos):
 		for sq in SQUARES:
-			self.attacks_to[sq] = 0
-			self.attacks_from[sq] = 0
-		self.knightattacks(pos)
-		self.pawnattacks(pos)
-		self.kingattacks(pos)
-		self.rookattacks(pos)
-		self.bishopattacks(pos)
-		self.queenattacks(pos)
-		return
-				
-		
+			self._attacks_to[sq] = 0
+			self._attacks_from[sq] = 0
+		for piece in 'PRNBQK':
+			piece_positions = deepcopy(pos.piece_bb[piece] | pos.piece_bb[piece.lower()])
+			while(piece_positions):
+				#find the piece squares
+				source_sq = lsb(piece_positions)
+				#clear source square
+				piece_positions ^= source_sq
+				attacks = self.get_attacks_from(source_sq,pos)
+				self._attacks_from[source_sq] |= attacks
+				while(attacks):
+					dest_sq = lsb(attacks)
+					attacks ^= dest_sq
+					if (piece != 'P' or dest_sq & pos.piece_bb['all_pieces'] != 0):
+						#for pawns attacks_to only contains capturing moves
+						self._attacks_to[dest_sq] |= source_sq
+		#to avoid just grabbing these attack maps without ensuring they apply to
+		#the correct position, we keep them as 'private' member variables
+		attacks = {'to': deepcopy(self._attacks_to), 'from':deepcopy(self._attacks_from)}
+		return attacks
+	
+	#function to generate attacks from a given square
+	def get_attacks_from(self,source_sq,pos):
+		attacks = 0
+		if source_sq & pos.piece_bb['all_pieces'] == 0:
+			attacks = 0
+		elif source_sq & (pos.piece_bb['Q'] | pos.piece_bb['q']) != 0:
+			attacks = self.get_diag_attacks(source_sq,pos)
+			attacks |= self.get_file_attacks(source_sq,pos)
+			attacks |= self.get_rank_attacks(source_sq,pos)
+		elif source_sq & (pos.piece_bb['B'] | pos.piece_bb['b']) != 0:
+			attacks = self.get_diag_attacks(source_sq,pos)
+		elif source_sq & (pos.piece_bb['R'] | pos.piece_bb['r']) != 0:
+			attacks = self.get_file_attacks(source_sq,pos)
+			attacks |= self.get_rank_attacks(source_sq,pos)
+		elif source_sq & (pos.piece_bb['N'] | pos.piece_bb['n']) != 0:
+			attacks = self._preprocattacks.knight[source_sq]
+		elif source_sq & (pos.piece_bb['K'] | pos.piece_bb['k']) != 0:
+			attacks = self._preprocattacks.king[source_sq] 
+		elif source_sq & (pos.piece_bb['P'] | pos.piece_bb['p']) != 0:
+			attacks = self.get_pawn_noncapture_attacks(source_sq,pos) | self.get_pawn_capture_attacks(source_sq,pos) | self.get_pawn_enpassant_attacks(source_sq,pos) 
+		return attacks	
+			
 class Evaluation:
 	def __init__(self):
-		#parameters for position evaluatiom
-		self.piecevalue = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+		#parameters for position evaluation
+		#piece values, taken from shatranj python chess engine
+		self._piece_value_weight = 1
+		self._piece_value= {'K': 40000, 'Q': 891, 'R': 561, 'B': 344, 'N': 322, 'P': 100}
+		#piece position value, taken from shatranj python chess engine
+		self._piece_position_weight = 1
+		self._piece_square_value = {}
+		self._piece_square_value['P'] = {}
+		self._piece_square_value['p'] = {}
+		self._piece_square_value['N'] = {}
+		self._piece_square_value['n'] = {}
+		self._piece_square_value['B'] = {}
+		self._piece_square_value['b'] = {}
+		self._piece_square_value['R'] = {}
+		self._piece_square_value['r'] = {}
+		self._piece_square_value['Q'] = {}
+		self._piece_square_value['q'] = {}
+		self._piece_square_value['K'] = {}
+		self._piece_square_value['k'] = {}
+
+		bp = [ 0, 0, 0, 0, 0, 0, 0, 0,
+					2,  3,  4,  0,  0,  4,  3,  2, 
+					4,  6, 12, 12, 12,  4,  6,  4,
+					4,  7, 18, 25, 25, 16,  7,  4,
+					6, 11, 18, 27, 27, 16, 11,  6,
+					10, 15, 24, 32, 32, 24, 15, 10,
+					10, 15, 24, 32, 32, 24, 15, 10,
+					0,  0,  0,  0,  0,  0,  0,  0 ]
+
+		wp = [ 0, 0,  0,  0,  0,  0,  0,  0,   
+					10, 15, 24, 32, 32, 24, 15, 10,
+					10, 15, 24, 32, 32, 24, 15, 10,
+					6, 11, 18, 27, 27, 16, 11,  6,
+					4,  7, 18, 25, 25, 16,  7,  4,
+					4,  6, 12, 12, 12,  4,  6,  4,
+					2,  3,  4,  0,  0,  4,  3,  2, 
+					0,  0,  0,  0,  0,  0,  0,  0 ]
+
+		bn = [-7, -3,  1,  3,  3,  1, -3, -7,
+					2,  6, 14, 20, 20, 14,  6,  2,
+					6, 14, 22, 26, 26, 22, 14,  6,
+					8, 18, 26, 30, 30, 26, 18,  8,
+					8, 18, 30, 32, 32, 30, 18,  8,
+					6, 14, 28, 32, 32, 28, 14,  6,
+					2,  6, 14, 20, 20, 14,  6,  2,
+					-7, -3,  1,  3,  3,  1, -3, -7 ]
+
+		wn = [-7, -3,  1,  3,  3,  1, -3, -7,
+					2,  6, 14, 20, 20, 14,  6,  2,
+					6, 14, 28, 32, 32, 28, 14,  6,
+					8, 18, 30, 32, 32, 30, 18,  8,
+					8, 18, 26, 30, 30, 26, 18,  8,
+					6, 14, 22, 26, 26, 22, 14,  6,
+					2,  6, 14, 20, 20, 14,  6,  2,
+					-7, -3,  1,  3,  3,  1, -3, -7 ]
+
+		bb = [ 16, 16, 16, 16, 16, 16, 16, 16,
+					26, 29, 31, 31, 31, 31, 29, 26,
+					26, 28, 32, 32, 32, 32, 28, 26,
+					16, 26, 32, 32, 32, 32, 26, 16,
+					16, 26, 32, 32, 32, 32, 26, 16,
+					16, 28, 32, 32, 32, 32, 28, 16,
+					16, 29, 31, 31, 31, 31, 29, 16,
+					16, 16, 16, 16, 16, 16, 16, 16 ]
+
+		wb = [ 16, 16, 16, 16, 16, 16, 16, 16,
+					16, 29, 31, 31, 31, 31, 29, 16,
+					16, 28, 32, 32, 32, 32, 28, 16,
+					16, 26, 32, 32, 32, 32, 26, 16,
+					16, 26, 32, 32, 32, 32, 26, 16,
+					26, 28, 32, 32, 32, 32, 28, 26,
+					26, 29, 31, 31, 31, 31, 29, 26,
+					16, 16, 16, 16, 16, 16, 16, 16 ]
+
+		br = [ 0,  0,  0,  3,  3,  0,  0,  0,
+					-2,  0,  0,  0,  0,  0,  0, -2,
+					-2,  0,  0,  0,  0,  0,  0, -2,
+					-2,  0,  0,  0,  0,  0,  0, -2,
+					-2,  0,  0,  0,  0,  0,  0, -2,
+					-2,  0,  0,  0,  0,  0,  0, -2,
+					10, 10, 10, 10, 10, 10, 10, 10,
+					0,  0,  0,  0,  0,  0,  0,  0 ]
+
+		wr = [ 0, 0,  0,  0,  0,  0,  0,  0,
+					10, 10, 10, 10, 10, 10, 10, 10,
+					-2, 0, 0, 0, 0, 0, 0, -2,
+					-2, 0, 0, 0, 0, 0, 0, -2,
+					-2, 0, 0, 0, 0, 0, 0, -2,
+					-2, 0, 0, 0, 0, 0, 0, -2,
+					-2, 0, 0, 0, 0, 0, 0, -2,
+					0, 0, 0, 3, 3, 0, 0, 0 ]
+
+		bq = [ -2, -2, -2, 0, 0, -2, -2, -2,
+					0, 0, 1, 1, 1, 0, 0, 0,
+					0, 1, 1, 1, 1, 0, 0, 0,
+					0, 0, 0, 2, 2, 0, 0, 0,
+					0, 0, 0, 2, 2, 0, 0, 0,
+					-2, -2, 0, 0, 0, 0, 0, 0,
+					-2, -2, 0, 0, 0, 0, 0, 0,
+					-2, -2, 0, 0, 0, 0, 0, 0 ]
+
+		wq = [ -2, -2, 0, 0, 0, 0, 0, 0,
+					-2, -2, 0, 0, 0, 0, 0, 0,
+					-2, -2, 0, 0, 0, 0, 0, 0,
+					0, 0, 0, 2, 2, 0, 0, 0,
+					0, 0, 0, 2, 2, 0, 0, 0,
+ 					0, 1, 1, 1, 1, 0, 0, 0,
+ 					0, 0, 1, 1, 1, 0, 0, 0,
+ 					-2, -2, -2, 0, 0, -2, -2, -2 ]
+
+		bk = [ 3, 3, 8, -12,-8, -12,10, 5,
+					-5, -5, -12,-12,-12,-12,-5, -5,
+					-7, -15,-15,-15,-15,-15,-15,-7,
+					-20,-20,-20,-20,-20,-20,-20,-20,
+					-20,-20,-20,-20,-20,-20,-20,-20,
+					-20,-20,-20,-20,-20,-20,-20,-20,
+					-20,-20,-20,-20,-20,-20,-20,-20,
+					-20,-20,-20,-20,-20,-20,-20,-20 ]
+
+		wk = [-20, -20,-20,-20,-20,-20,-20,-20,
+					-20,-20,-20,-20,-20,-20,-20,-20,
+					-20,-20,-20,-20,-20,-20,-20,-20,
+					-20,-20,-20,-20,-20,-20,-20,-20,
+					-20,-20,-20,-20,-20,-20,-20,-20,
+					-7, -15,-15,-15,-15,-15,-15, -7,
+					-5, -5,-12,-12,-12,-12, -5, -5,
+					3, 3,  8,-12, -8,-12, 10,  5 ]
+		
+		for i in range(64):
+			self._piece_square_value['P'][1L<<i] = wp[63-i]
+			self._piece_square_value['p'][1L<<i] = bp[63-i]
+			self._piece_square_value['N'][1L<<i] = wn[63-i]
+			self._piece_square_value['n'][1L<<i] = bn[63-i]
+			self._piece_square_value['B'][1L<<i] = wb[63-i]
+			self._piece_square_value['b'][1L<<i] = bb[63-i]
+			self._piece_square_value['R'][1L<<i] = wr[63-i]
+			self._piece_square_value['r'][1L<<i] = br[63-i]
+			self._piece_square_value['Q'][1L<<i] = wq[63-i]
+			self._piece_square_value['q'][1L<<i] = bq[63-i]
+			self._piece_square_value['K'][1L<<i] = wk[63-i]
+			self._piece_square_value['k'][1L<<i] = bk[63-i]
+
 		return
 		
 	#main position evaluation function
 	def evaluate(self, pos):
 		#calculate material imbalance
-		eval = self.materialimbalance(pos)
+		eval = self._piece_value_weight * self.materialimbalance(pos)
+		#piece position bonus
+		eval += self._piece_position_weight * self.positionbonus(pos)
 		return eval
 		
 	def materialimbalance(self,pos):
 		eval = 0
-		for piece in 'PRNBQ':
-			eval += self.piecevalue[piece]*(pos.piece_count[piece] - pos.piece_count[piece.lower()])
+		for piece in 'PRNBQK':
+			eval += self._piece_value[piece]*(pos.piece_count[piece] - pos.piece_count[piece.lower()])
+		return eval
+		
+	def positionbonus(self,pos):
+		eval = 0
+		multiplier = 1
+		for piece in 'PpRrNnBbQqKk':
+			tmp_pos = deepcopy(pos.piece_bb[piece])
+			while(tmp_pos):
+				sq = lsb(tmp_pos)
+				tmp_pos ^= sq
+				eval += multiplier * self._piece_square_value[piece][sq]
+			multiplier *= -1
 		return eval
 		
 		
@@ -683,13 +809,25 @@ class MoveGenerator:
 		return
 		
 	def getmove(self, tomove, pos):
-		#generate all possible attacks
+		#remember that attacks_from contains all possible pawn moves, whereas attacks_to only contains pawn capturing moves
+		logger.info('MoveGenerator::getmove - start')
+		
 		movelist = []
 		pieces = 'w_pieces'
 		if tomove == BLACK:
 			pieces = 'b_pieces'
-		self._pseudoattacks.generateattacks(pos)
-		attacks_from = self._pseudoattacks.attacks_from
+		
+		#generate all possible attacks
+		attacks = self._pseudoattacks.get_attacks(pos)
+		attacks_from = attacks['from']
+		attacks_to = attacks['to']
+		
+		#check for check. use attacks_to here so that forward move by pawn cant put the king in check
+		king_in_check = False
+		if (attacks_to[pos.piece_bb['K']] & pos.piece_bb['b_pieces']) !=0 or (attacks_to[pos.piece_bb['k']] & pos.piece_bb['w_pieces']) !=0:
+			king_in_check = True
+			
+		#generate possible moves
 		for sq in SQUARES:
 			if (sq & pos.piece_bb[pieces]):
 				attacks = deepcopy(attacks_from[sq])
@@ -700,52 +838,123 @@ class MoveGenerator:
 					if not (dest_sq & pos.piece_bb[pieces]):
 						amove = Move(dest_sq,sq)
 						movelist.append(amove)
+						
 		#check for promotions 
+		knight_promotions = []
 		for amove in movelist:
 			#check to see if we have a pawn move
 			if tomove == WHITE:
 				if(amove.getsourcesq() & pos.piece_bb['P']):
 					if RANK[amove.getdestsq()] == 8:
 						amove.setpromotedto('Q')
-						movelist.append(Move(amove.getdestsq(),amove.getsourcesq(),'N'))
+						knight_promotions.append(Move(amove.getdestsq(),amove.getsourcesq(),'N'))
 			else:
 				if(amove.getsourcesq() & pos.piece_bb['p']):
-					if RANK[amove.getdestsq()] == 8:
+					if RANK[amove.getdestsq()] == 1:
 						amove.setpromotedto('q')
-						movelist.append(Move(amove.getdestsq(),amove.getsourcesq(),'n'))
-		#find best move
-		bestmove = self.getbestmovefromlist(tomove,movelist,pos)
-		#check that we are not leaving king in check
-		if self.check(bestmove,pos):
-			print 'check: illegal move'
-		return bestmove
+						knight_promotions.append(Move(amove.getdestsq(),amove.getsourcesq(),'n'))
+		movelist.extend(knight_promotions)
 		
-	def check(self,move,pos):
-		return False
-	
-	def getbestmovefromlist(self, tomove, moves, pos):
-		#evaluate best possible move from given list of moves
-		evals = []
-		nomoves = len(moves)
+		#determine evaluations of pseudo legal moves and arrange in order
+		orderedmoves = self.get_ordered_evaluations(tomove,movelist,pos)
+		print 'Ordered pseudo legal moves:' + str(orderedmoves)
+		
 		#evaluate current position
 		currenteval = self._evaluator.evaluate(pos)
-		for index in range(0,nomoves):
+		
+		#loop over ordered moves to determine best legal move. 
+		best_legal_moves = []
+		#get best evaluation based on pseudo legal moves
+		best_eval = orderedmoves[0][1]
+		for move_eval_pair in orderedmoves:
+			move = move_eval_pair[0]
+			eval = move_eval_pair[1]
+			if ((tomove ==  WHITE and eval < best_eval) or (tomove == BLACK and eval > best_eval)) and len(best_legal_moves) > 0:
+				#break out of loop if we have explored best moves and found one or more to be legal
+				break
+			if not self.pinned(tomove,move,pos,attacks_to,attacks_from):
+				best_legal_moves.append(move_eval_pair)
+		
+		print 'Best legal moves:' + str(best_legal_moves)
+		
+		#check for stalemate and checkmate
+		if len(best_legal_moves) == 0:
+			if king_in_check == False:
+				print 'Stalemate'
+			else:
+				print 'Checkmate'
+			sys.exit()
+		
+		#choose a random move from best legal moves list
+		tmp = random.choice(best_legal_moves)
+		bestmove = tmp[0]
+		bestmove_evaluation = tmp[1]
+	
+		#print result
+		print 'Move chosen: ' + str(bestmove)
+		print 'Evaluation: ' + str(bestmove_evaluation) + '\n'
+		
+		logger.info('MoveGenerator::getmove - end')
+		return bestmove
+		
+	#check for pinned pieces 
+	def pinned(self,tomove,move,pos,attacks_to,attacks_from):
+		#check some simple conditions for it being a pinned piece, then if these
+		#conditions are satisfied only then generate the piece moves that allow us to confirm the pin
+		potential_pin = False
+		king = 'k'
+		sliding_pieces = 'BRQ'
+		if tomove == WHITE:
+			sliding_pieces = 'brq'
+			king = 'K'
+		#first we check if the piece is not the king as the king cannot be pinned
+		if attacks_to[move.getsourcesq()] != 0 and (move.getsourcesq() & pos.piece_bb[king] == 0):
+			#if piece is attacked it can only be pinned by a sliding piece		
+			for attacking_piece in sliding_pieces:
+				attacking_piece_pos = deepcopy(pos.piece_bb[attacking_piece])
+				while(attacking_piece_pos):
+					attacking_piece_sq = lsb(attacking_piece_pos)
+					attacking_piece_pos ^= attacking_piece_sq
+					if (attacks_from[attacking_piece_sq] & move.getsourcesq()) != 0:
+						#piece can only be pinned if king, attacking piece and moving piece are aligned
+						#check alignment along rank and file for queen and rook attacks
+						if not attacking_piece in 'Bb':
+							if (RANK[attacking_piece_sq] == RANK[move.getsourcesq()] == RANK[pos.piece_bb[king]]) or (FILE[attacking_piece_sq] == FILE[move.getsourcesq()] == FILE[pos.piece_bb[king]]):
+								potential_pin = True
+						#check alignment along diagonals for bishop and queen
+						if not attacking_piece in 'Rr' and potential_pin == False:
+							for key in ['NE','NW']:
+								if (sq_to_diagonal_bb(key,move.getsourcesq()) == sq_to_diagonal_bb(key,attacking_piece_sq)) and (sq_to_diagonal_bb(key,attacking_piece_sq) == sq_to_diagonal_bb(key,pos.piece_bb[king])):
+									potential_pin = True
+						if potential_pin == True:
+							#now update sliding piece moves once attacked piece has been moved, so that we can check for check
+							tmp_position = deepcopy(pos)
+							tmp_position.update(move)
+							attacks = self._pseudoattacks.get_attacks_from(attacking_piece_sq,tmp_position)
+							if attacks & pos.piece_bb[king] != 0:
+								#exit function as soon as we discover a pin
+								return True
+		return False
+	
+	#returns moves and evaluations in order from best to worst
+	def get_ordered_evaluations(self, tomove, movelist, pos):
+		#evaluate best possible move from given list of moves
+		evals = []
+		#evaluate all given moves
+		for move in movelist:
 			#create copy of position
 			tmp_position = deepcopy(pos)
 			#update position with move
-			tmp_position.update(moves[index])
+			tmp_position.update(move)
 			#evaluate new position
-			evals.append((index,self._evaluator.evaluate(tmp_position)))
-		#find maximum evaluation for white and minimum evaluation for black
-		orderedmoves = sorted(evals, key = itemgetter(1),reverse = True)
-		bestmove = moves[orderedmoves[0][0]]
-		eval = orderedmoves[0][1]
-		if tomove == BLACK:
-			bestmove = moves[orderedmoves[nomoves-1][0]]
-			eval = orderedmoves[nomoves-1][1]
-		if eval == currenteval:
-			bestmove = random.choice(moves)
-		return bestmove
+			evals.append((move,self._evaluator.evaluate(tmp_position)))
+		#order moves by evaluation
+		orderedmoves = []
+		if tomove == WHITE:
+			orderedmoves = sorted(evals, key = itemgetter(1),reverse = True)
+		else:
+			orderedmoves = sorted(evals, key = itemgetter(1))
+		return orderedmoves
 		
 
 #################################
@@ -755,8 +964,10 @@ class MoveGenerator:
 def main():
 	#set-up
 	tomove = WHITE
+	#tomove = BLACK
+	preprocessedattacks = PreProcessedAttacks()
 	board = Position(INIT_FEN)
-	pseudoattacks = PseudoLegalAttackGenerator(PreProcessedAttacks())
+	pseudoattacks = PseudoLegalAttackGenerator(preprocessedattacks)
 	evaluator = Evaluation()
 	move_generator = MoveGenerator(pseudoattacks,evaluator)
 	#generate moves
@@ -767,11 +978,10 @@ def main():
 			print 'White to move' 
 		else:
 			print 'Black to move' 
-		new_move = move_generator.getmove(tomove,board)
-		print 'Move chosen: ' + str(new_move)
-		board.update(new_move)
 		board.display()
-		print 'Evaluation: ' + str(evaluator.evaluate(board)) + '\n'
+		new_move = move_generator.getmove(tomove,board)
+		board.update(new_move)
+		print 'FEN: ' + str(board.create_fen())
 		tomove ^= 1
 	return
 
