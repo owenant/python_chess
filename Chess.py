@@ -5,6 +5,10 @@ import math
 import logging
 import sys
 import pdb
+import time
+
+#trick so that everything is printed in one go
+sys.stdout = sys.stderr
 
 logging.basicConfig()
 logger = logging.getLogger('')
@@ -12,6 +16,9 @@ logger.setLevel(logging.WARNING)
 
 #next steps
 #remove asymmetry wrt to pawns from attacks_from and attacks_to map, but check in getmove for diagonal capturing moves?
+#private member functions?
+#docstrings
+#order moves by evaluation to speed up alpha-beta search
 
 #################################
 #           Globals             #
@@ -36,7 +43,6 @@ for r in range(8,0,-1):
 		index -= 1      
 #define globals which store the diagonals 
 DIAGONALS = {'NE': [[h1],[g1,h2],[f1,g2,h3],[e1,f2,g3,h4],[d1,e2,f3,g4,h5],[c1,d2,e3,f4,g5,h6],[b1,c2,d3,e4,f5,g6,h7],[a1,b2,c3,d4,e5,f6,g7,h8],[a2,b3,c4,d5,e6,f7,g8],[a3,b4,c5,d6,e7,f8],[a4,b5,c6,d7,e8],[a5,b6,c7,d8],[a6,b7,c8],[a7,b8],[a8]], 'NW': [[a1],[b1,a2],[c1,b2,a3],[d1,c2,b3,a4],[e1,d2,c3,b4,a5],[f1,e2,d3,c4,b5,a6],[g1,f2,e3,d4,c5,b6,a7],[h1,g2,f3,e4,d5,c6,b7,a8],[h2,g3,f4,e5,d6,c7,b8],[h3,g4,f5,e6,d7,c8],[h4,g5,f6,e7,d8],[h5,g6,f7,e8],[h6,g7,f8],[h7,g8],[h8]]}
-
 
 #################################
 #        Useful functions       #
@@ -803,14 +809,75 @@ class Move:
 		
 
 class MoveGenerator:
-	def __init__(self, pseudoattacks, evaluator):
+	def __init__(self, pseudoattacks, evaluator, treedepth):
 		self._pseudoattacks = pseudoattacks
 		self._evaluator = evaluator
+		self._treedepth = treedepth
+		
+		#arbitrarly large number of search routine
+		self._maxscore = 100000
 		return
 		
 	def getmove(self, tomove, pos):
+		#call search function
+		bestmove, alphabeta_score = self.alphabeta(tomove, pos, 0, self._treedepth, -self._maxscore, self._maxscore, self._maxscore)
+	
+		#print result
+		print 'Move chosen: ' + str(bestmove)
+		print 'AlphaBeta score: ' + str(alphabeta_score)
+		
+		return bestmove
+		
+	def alphabeta(self, tomove, node_pos, depth, treedepth, alpha, beta, maxscore):
+		#generate alpha beta value recursively
+		#generate node_moves 
+		node_moves = self.tree_nodes(tomove, node_pos)
+		if depth == treedepth:
+			#compute evaluations
+			node_evals = self.get_evaluations(tomove, node_moves, node_pos)
+			#determine best move and position evaluation
+			bestmove = node_moves[0]
+			alphabeta_result = node_evals[0]
+			for index in range(1,len(node_moves)):
+				if (tomove == WHITE and node_evals[index] > alphabeta_result) or (tomove == BLACK and node_evals[index] < alphabeta_result):
+					bestmove = node_moves[index]
+					alphabeta_result = node_evals[index]
+			#in case evaluation function is flat choose a random move from best node_moves
+			#ordered_evals = sorted(node_evals)
+			#if ordered_evals[0] == ordered_evals[len(ordered_evals)-1]:
+				#bestmove = random.choice(node_moves)
+				#alphabeta_result = node_evals[0]		
+		else:
+			#we need the alpha beta value for all possible moves from this node
+			bestmove = node_moves[0]
+			alphabeta_result = -maxscore #some large negative number
+			next_to_move = BLACK
+			if tomove == BLACK:
+				next_to_move = WHITE
+				alphabeta_result *= -1
+			for move in node_moves:
+				if (tomove == WHITE and alphabeta_result < beta) or (tomove == BLACK and alphabeta_result > alpha):
+					#take a copy of node position and call minimax again
+					nextpos = deepcopy(node_pos)
+					nextpos.update(move)
+					amove,result = self.alphabeta(next_to_move, nextpos, depth+1, treedepth, alpha, beta, maxscore)
+					if (tomove ==  WHITE and (result > alphabeta_result)):
+						alphabeta_result = result
+						bestmove = move
+						alpha = max(alphabeta_result, alpha)
+					elif (tomove == BLACK and (result < alphabeta_result)):
+						alphabeta_result = result
+						bestmove = move
+						beta = min(alphabeta_result, beta)
+				else:
+					break
+		
+		return bestmove,alphabeta_result
+		
+	#calculate possible legal moves and evaluate each move
+	def tree_nodes(self, tomove, pos):
 		#remember that attacks_from contains all possible pawn moves, whereas attacks_to only contains pawn capturing moves
-		logger.info('MoveGenerator::getmove - start')
+		logger.info('MoveGenerator::tree_nodes - start')
 		
 		movelist = []
 		pieces = 'w_pieces'
@@ -855,47 +922,13 @@ class MoveGenerator:
 						knight_promotions.append(Move(amove.getdestsq(),amove.getsourcesq(),'n'))
 		movelist.extend(knight_promotions)
 		
-		#determine evaluations of pseudo legal moves and arrange in order
-		orderedmoves = self.get_ordered_evaluations(tomove,movelist,pos)
-		print 'Ordered pseudo legal moves:' + str(orderedmoves)
+		#exclude moves from pinned pieces
+		for amove in movelist:
+			if self.pinned(tomove,amove,pos,attacks_to,attacks_from):
+				movelist.remove(amove)
 		
-		#evaluate current position
-		currenteval = self._evaluator.evaluate(pos)
-		
-		#loop over ordered moves to determine best legal move. 
-		best_legal_moves = []
-		#get best evaluation based on pseudo legal moves
-		best_eval = orderedmoves[0][1]
-		for move_eval_pair in orderedmoves:
-			move = move_eval_pair[0]
-			eval = move_eval_pair[1]
-			if ((tomove ==  WHITE and eval < best_eval) or (tomove == BLACK and eval > best_eval)) and len(best_legal_moves) > 0:
-				#break out of loop if we have explored best moves and found one or more to be legal
-				break
-			if not self.pinned(tomove,move,pos,attacks_to,attacks_from):
-				best_legal_moves.append(move_eval_pair)
-		
-		print 'Best legal moves:' + str(best_legal_moves)
-		
-		#check for stalemate and checkmate
-		if len(best_legal_moves) == 0:
-			if king_in_check == False:
-				print 'Stalemate'
-			else:
-				print 'Checkmate'
-			sys.exit()
-		
-		#choose a random move from best legal moves list
-		tmp = random.choice(best_legal_moves)
-		bestmove = tmp[0]
-		bestmove_evaluation = tmp[1]
-	
-		#print result
-		print 'Move chosen: ' + str(bestmove)
-		print 'Evaluation: ' + str(bestmove_evaluation) + '\n'
-		
-		logger.info('MoveGenerator::getmove - end')
-		return bestmove
+		logger.info('MoveGenerator::tree_nodes - end')
+		return movelist
 		
 	#check for pinned pieces 
 	def pinned(self,tomove,move,pos,attacks_to,attacks_from):
@@ -936,9 +969,8 @@ class MoveGenerator:
 								return True
 		return False
 	
-	#returns moves and evaluations in order from best to worst
-	def get_ordered_evaluations(self, tomove, movelist, pos):
-		#evaluate best possible move from given list of moves
+	#returns evaluations for list of moves
+	def get_evaluations(self, tomove, movelist, pos):
 		evals = []
 		#evaluate all given moves
 		for move in movelist:
@@ -947,14 +979,8 @@ class MoveGenerator:
 			#update position with move
 			tmp_position.update(move)
 			#evaluate new position
-			evals.append((move,self._evaluator.evaluate(tmp_position)))
-		#order moves by evaluation
-		orderedmoves = []
-		if tomove == WHITE:
-			orderedmoves = sorted(evals, key = itemgetter(1),reverse = True)
-		else:
-			orderedmoves = sorted(evals, key = itemgetter(1))
-		return orderedmoves
+			evals.append(self._evaluator.evaluate(tmp_position))
+		return evals
 		
 
 #################################
@@ -964,14 +990,16 @@ class MoveGenerator:
 def main():
 	#set-up
 	tomove = WHITE
+	search_depth = 2
+	print 'Search depth: ' + str(search_depth)
 	#tomove = BLACK
 	preprocessedattacks = PreProcessedAttacks()
 	board = Position(INIT_FEN)
 	pseudoattacks = PseudoLegalAttackGenerator(preprocessedattacks)
 	evaluator = Evaluation()
-	move_generator = MoveGenerator(pseudoattacks,evaluator)
+	move_generator = MoveGenerator(pseudoattacks,evaluator,search_depth)
 	#generate moves
-	nomoves = 20
+	nomoves = 10
 	for i in range(1, nomoves+1):
 		print 'Move: ' + str(i)
 		if tomove == WHITE:
@@ -979,9 +1007,12 @@ def main():
 		else:
 			print 'Black to move' 
 		board.display()
+		start = time.time()
 		new_move = move_generator.getmove(tomove,board)
+		end = time.time()
 		board.update(new_move)
-		print 'FEN: ' + str(board.create_fen())
+		print 'Elapsed time for move generation: ' + str(round(end - start,2)) + str('s')
+		print 'FEN: ' + str(board.create_fen()) + '\n'
 		tomove ^= 1
 	return
 
